@@ -9,7 +9,6 @@ RUN apt-get update; \
     pip install --upgrade pip; \
     pip install numpy; \
     pip install opencv-python numpy scipy tensorflow universe six; \
-    git clone https://github.com/jderehag/universe-starter-agent.git; \
-    mkdir -p ${AGENTLOGDIR}
+    git clone https://github.com/jderehag/universe-starter-agent.git
 
 EXPOSE 2222 12345
