@@ -11,4 +11,7 @@ RUN apt-get update; \
     pip install opencv-python numpy scipy tensorflow universe six; \
     git clone https://github.com/jderehag/universe-starter-agent.git
 
+# copy flashgames.json to universe
+COPY flashgames.json /usr/local/lib/python2.7/dist-packages/universe/runtimes/
+
 EXPOSE 2222 12345
