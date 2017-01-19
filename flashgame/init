@@ -1,0 +1,268 @@
+#!/usr/bin/env python
+import logging
+import os
+import stat
+import shutil
+import subprocess
+import sys
+import time
+import signal
+
+logger = logging.getLogger()
+formatter = logging.Formatter('[init] [%(asctime)s] %(message)s')
+handler = logging.StreamHandler(sys.stderr)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+import base64
+import uuid
+def random_alphanumeric(length=14):
+    buf = []
+    while len(buf) < length:
+        entropy = base64.encodestring(uuid.uuid4().bytes).decode('ascii')
+        bytes = [c for c in entropy if c.isalnum()]
+        buf += bytes
+    return ''.join(buf)[:length]
+
+class Error(Exception):
+    pass
+
+def launch_tigervnc():
+    subprocess.Popen("""
+rm -f /tmp/.X11-unix/X0
+
+/app/universe-envs/base/openai-tigervnc -ZlibLevel 0 2>&1 | sudo -u nobody sed -u -e 's/^/[tigervnc] /' &
+
+# Wait for X to start
+file="/tmp/.X11-unix/X0"
+for i in $(seq 1 10); do
+    if [ -e "$file" ]; then
+	break
+    fi
+
+    echo "[$(date)] Waiting for $file to be created (try $i/10)"
+    sleep "$i"
+done
+""", shell=True)
+
+def setup_privileged_dirs():
+    # These are not *secret*, just can only be written by root.
+    if os.path.exists('/usr/local/openai/privileged_state'):
+        shutil.rmtree('/usr/local/openai/privileged_state')
+    os.makedirs('/usr/local/openai/privileged_state')
+
+    if os.path.exists('/usr/local/openai/privileged_flags'):
+        shutil.rmtree('/usr/local/openai/privileged_flags')
+    os.makedirs('/usr/local/openai/privileged_flags')
+
+    # The following can be written by anyone:
+    if os.path.exists('/usr/local/openai/unprivileged_state'):
+        shutil.rmtree('/usr/local/openai/unprivileged_state')
+    os.makedirs('/usr/local/openai/unprivileged_state')
+    os.chmod('/usr/local/openai/unprivileged_state', stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+
+def allow_internal_traffic():
+    with open('/usr/local/openai/privileged_flags/SECURITY_HOLE_ALLOW_INTERNAL_TRAFFIC', 'w') as f:
+        f.write('true')
+
+def allow_demo_upload_traffic():
+    with open('/usr/local/openai/privileged_flags/ALLOW_DEMO_UPLOAD_TRAFFIC', 'w') as f:
+        f.write('true')
+
+def setup_livestream():
+    twitch_ips = subprocess.check_output("dig +short live.twitch.tv | sed -u -e 's/^\(.*\)/\1 live.twitch.tv/'", shell=True)
+    # hack(y): hardcode twitch_ips because command above gives us
+    # '\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n\x01 live.twitch.tv\n'
+    hardcoded_twitch_ips = b"""23.160.0.81 live.twitch.tv
+23.160.0.82 live.twitch.tv
+23.160.0.83 live.twitch.tv
+23.160.0.84 live.twitch.tv
+23.160.0.85 live.twitch.tv
+23.160.0.86 live.twitch.tv
+192.108.239.80 live.twitch.tv
+192.108.239.81 live.twitch.tv
+192.108.239.82 live.twitch.tv
+192.108.239.83 live.twitch.tv
+192.108.239.84 live.twitch.tv
+192.108.239.85 live.twitch.tv
+192.108.239.86 live.twitch.tv
+23.160.0.80 live.twitch.tv"""
+
+    logging.info("twitch_ips: %s", twitch_ips)
+    with open('/usr/local/openai/privileged_flags/ALLOWED_OUTBOUND', 'wb') as f:
+        #f.write(twitch_ips)
+        f.write(hardcoded_twitch_ips)
+    subprocess.check_call("/app/universe-envs/base/openai-livestream 2>&1 | sed -u -e 's/^/[livestream] /' &", shell=True)
+
+# def cleanup_processes():
+#     while True:
+#         # Note that this is *not* a foolproof way of clearing all the
+#         # nobody processes.
+#         logger.info('Killing all processes belonging to xvnc and nobody')
+#         subprocess.check_call(['killall', '-9', '-v', '-u', 'xvnc', '-u', 'nobody'])
+#         pids = subprocess.check_output(['pgrep', '-U', 'xvnc', 'nobody']).strip().split('\n')
+#         if len(pids) > 0:
+#             logger.info('Some xvnc/nobody processes are still up: %s. Sleeping for a second and will try again.', pids)
+#             time.sleep(1)
+#             continue
+
+def sudoable_env_setup():
+    # Do the sudo dance just to clear our environment variables and
+    # run it similarly to how controlplane will run it.
+    subprocess.check_call(['sudo', '-u', 'nobody', 'sudo', '/usr/local/bin/sudoable-env-setup'])
+
+def launch_http():
+    subprocess.check_call("nginx 2>&1 | sed -u -e 's/^/[nginx] /' &", shell=True)
+
+def setup_logdir(path='/tmp/demo'):
+    if path is not None:
+        os.makedirs(path, exist_ok=True)
+
+def launch_webvnc():
+    # first launch websockify.
+    subprocess.check_call('/vendor/websockify/run 5898 localhost:5900 &', shell=True)
+    # then launch web vnc portal.
+    subprocess.check_call('cd /vendor/noVNC/ && python -m http.server 5897 &', shell=True)
+
+def launch_recorders(cmd, recorder_logdir):
+    logger.info('Launching system_diagnostics_logger.py, recorder_logdir={}'.format(recorder_logdir))
+    subprocess.check_call("/app/universe/example/system-diagnostics/system_diagnostics_logger.py >{}/system_diagnostics.jsonl 2>&1 &".format(recorder_logdir), shell=True)
+    logger.info('Launching reward_recorder.py, recorder_logdir={}'.format(recorder_logdir))
+    reward_recorder_flags = '-d {}'.format(recorder_logdir) if recorder_logdir else ''
+    subprocess.check_call("/app/universe/example/recorders/reward_recorder.py {} 2>&1 | sudo -u nobody sed -u -e 's/^/[reward_recorder] /' &".format(reward_recorder_flags), shell=True)
+    logger.info('Launching vnc_recorder.py, recorder_logdir={}'.format(recorder_logdir))
+    vnc_recorder_flags = '-d {}'.format(recorder_logdir) if recorder_logdir else ''
+    subprocess.check_call("/app/universe/example/recorders/vnc_recorder.py {} 2>&1 | sed -u -e 's/^/[vnc_recorder] /' &".format(vnc_recorder_flags), shell=True)
+    if cmd == 'bot-demonstration':
+        subprocess.check_call("/app/universe/example/recorders/botaction_recorder.py 2>&1 | sed -u -e 's/^/[botaction_recorder] /' &", shell=True)
+    demonstrator_id = os.environ.get('DEMONSTRATOR_ID')
+    if demonstrator_id:
+        subprocess.check_call("/app/universe-envs/flashgames/bin/upload_from_docker --loop {} &".format(demonstrator_id), shell=True)
+
+def basic_setup():
+    launch_tigervnc()
+    if os.environ.get('OPENAI_LIVESTREAM_URL'):
+        setup_livestream()
+    sudoable_env_setup()
+
+def launch_and_reap_zombies(cmd, launch_callback=None):
+    proc = subprocess.Popen(cmd)
+    logger.info('PID {} launched with command {}'.format(proc.pid, cmd))
+    if launch_callback: launch_callback()
+    while True:
+        (pid, status) = os.wait()
+
+        termsig = status & 255 # low bits encode the signal number that killed the process
+        child_code = status >> 8 # high bits encode the exit code from exit()
+
+        main_process_died = (pid == proc.pid)
+
+        if termsig > 0:
+            try:
+                signame = signal.Signals(termsig).name
+            except ValueError:
+                signame = '(unknown signal)'
+            logger.info('init detected end of child process %s with exit code %s, killed by %s: %s',
+                            pid, child_code, signame, termsig)
+            if main_process_died:
+                exit_code = 128 + termsig # borrowed this behavior from how sudo exits
+                logger.info('main process died, init exiting with code {}'.format(exit_code))
+                return exit_code
+        else:
+            logger.info('init detected end of child process %s with exit code %s, not killed by signal',
+                             pid, child_code)
+            if main_process_died:
+                exit_code = child_code
+                logger.info('main process died, init exiting with code {}'.format(exit_code))
+                return exit_code
+
+def main():
+    # Flush any iptables rules, in case this is our second time coming up
+    subprocess.check_call(['iptables', '-F'])
+    setup_privileged_dirs()
+
+    # Security note: this password should not be considered a strong
+    # authentication mechanism, as the VNC connection is
+    # unencrypted. That means a man in the middle can modify traffic
+    # as desired.
+    #
+    # TigerVNC supports TLS auth; if strong security is desired please
+    # use that.
+    subprocess.check_call(['/app/universe-envs/base/openai-setpassword'])
+
+    # we are multiplexing on 15900. see nginx.conf.
+    flags = ['--rewarder-port=15901']
+
+    if os.environ.get('ALLOCATOR_MODE'):
+        flags.append('--idle-timeout=900')
+
+    if os.environ.get('GYM_FLAGS'):
+        flags.extend(os.environ.get('GYM_FLAGS').split())
+
+    if os.environ.get('SECURITY_HOLE_ALLOW_INTERNAL_TRAFFIC'):
+        allow_internal_traffic()
+
+    if os.environ.get('ALLOW_DEMO_UPLOAD_TRAFFIC'):
+        allow_demo_upload_traffic()
+
+    recorder_logdir = os.environ.get('RECORDER_LOGDIR')
+
+    basedir = os.path.dirname(__file__)
+    if len(sys.argv) >= 2:
+        cmd = sys.argv[1]
+    else:
+        cmd = 'run'
+    argv = sys.argv[2:]
+
+    os.chdir(basedir)
+    base_command = ['sudo', '-H', '-u', 'nobody', 'DISPLAY=:0',
+                    # https://github.com/SeleniumHQ/docker-selenium/issues/87#issuecomment-187659234
+                    'DBUS_SESSION_BUS_ADDRESS=/dev/null',
+                    '/app/universe-envs/controlplane/bin/controlplane.py']+flags+argv
+
+    # allow web vnc to connect through web socket.
+    if cmd != 'diagnostics':
+        launch_webvnc()
+
+    if cmd == 'shell':
+        basic_setup()
+        os.execvp('bash', ['bash'] + argv)
+        launch_http()
+    elif cmd == 'dev':
+        basic_setup()
+        while True:
+            status = launch_and_reap_zombies(base_command, launch_callback=launch_http)
+            if status == 10:
+                return 0
+            elif status == 0:
+                logger.info('controlplane.py exited with good status code: %s. Will respawn immediately', status)
+            else:
+                logger.error('controlplane.py exited with bad status code: %s. Will respawn in 5s.', status)
+                time.sleep(5)
+    elif cmd == 'run':
+        if recorder_logdir is None:
+            recorder_logdir = '/tmp/demo'
+        basic_setup()
+        setup_logdir(recorder_logdir)
+        launch_recorders(cmd, recorder_logdir)
+        status = launch_and_reap_zombies(base_command, launch_callback=launch_http)
+        return status
+    elif cmd == 'demonstration' or cmd == 'bot-demonstration':
+        if recorder_logdir is None:
+            recorder_logdir = '/tmp/demo'
+        basic_setup()
+        setup_logdir(recorder_logdir)
+        launch_recorders(cmd, recorder_logdir)
+        status = launch_and_reap_zombies(base_command + ['--' + cmd], launch_callback=launch_http)
+        if cmd == 'bot-demonstration':
+            time.sleep(600) # Wait for upload_from_docker to finish
+        return status
+    elif cmd == 'diagnostics':
+        subprocess.check_call(['sudo', '-u', 'nobody', 'sudo', '/usr/local/bin/sudoable-env-setup', 'git-lfs', 'diagnostics'])
+    else:
+        logger.error('Unrecognized command: %s', cmd)
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())
