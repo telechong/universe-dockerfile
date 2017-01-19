@@ -144,7 +144,7 @@ def basic_setup():
     launch_tigervnc()
     if os.environ.get('OPENAI_LIVESTREAM_URL'):
         setup_livestream()
-    sudoable_env_setup()
+    # sudoable_env_setup()
 
 def launch_and_reap_zombies(cmd, launch_callback=None):
     proc = subprocess.Popen(cmd)
@@ -179,7 +179,7 @@ def launch_and_reap_zombies(cmd, launch_callback=None):
 
 def main():
     # Flush any iptables rules, in case this is our second time coming up
-    subprocess.check_call(['iptables', '-F'])
+    #subprocess.check_call(['iptables', '-F'])
     setup_privileged_dirs()
 
     # Security note: this password should not be considered a strong
@@ -189,6 +189,16 @@ def main():
     #
     # TigerVNC supports TLS auth; if strong security is desired please
     # use that.
+    logger.info("%s", '*' * 1000)
+    if os.path.exists("/dev/shm"):
+        logger.info("SKIP create /dev/shm as it's already exist")
+    else:
+        logger.info("Creating /dev/shm as it's not found")
+        subprocess.check_call(['mkdir', '/dev/shm'])
+        logger.info("Set /dev/shm permission to 777")
+        subprocess.check_call(['chmod', '777', '/dev/shm'])
+    output = subprocess.check_output(['df', '-h'])
+    logger.info('df -h output: %s', output)
     subprocess.check_call(['/app/universe-envs/base/openai-setpassword'])
 
     # we are multiplexing on 15900. see nginx.conf.
@@ -220,6 +230,7 @@ def main():
                     # https://github.com/SeleniumHQ/docker-selenium/issues/87#issuecomment-187659234
                     'DBUS_SESSION_BUS_ADDRESS=/dev/null',
                     '/app/universe-envs/controlplane/bin/controlplane.py']+flags+argv
+    print(sys.argv)
 
     # allow web vnc to connect through web socket.
     if cmd != 'diagnostics':
@@ -258,8 +269,9 @@ def main():
         if cmd == 'bot-demonstration':
             time.sleep(600) # Wait for upload_from_docker to finish
         return status
-    elif cmd == 'diagnostics':
-        subprocess.check_call(['sudo', '-u', 'nobody', 'sudo', '/usr/local/bin/sudoable-env-setup', 'git-lfs', 'diagnostics'])
+
+    #elif cmd == 'diagnostics':
+    #    subprocess.check_call(['sudo', '-u', 'nobody', 'sudo', '/usr/local/bin/sudoable-env-setup', 'git-lfs', 'diagnostics'])
     else:
         logger.error('Unrecognized command: %s', cmd)
         return 1

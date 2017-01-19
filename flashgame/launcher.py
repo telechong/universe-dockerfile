@@ -34,11 +34,11 @@ class FlashgamesLauncher(object):
 
     def reset(self):
         # Download any needed statics (really only need to do once)
-        if self.controlplane_spec is not None and not self.integrator_mode:
-            self._git_lfs_pull()
+        #if self.controlplane_spec is not None and not self.integrator_mode:
+        #    self._git_lfs_pull()
 
         # Set up the firewall rules. Must precede launching the browser.
-        subprocess.check_call(['sudo', '/usr/local/bin/sudoable-env-setup', self.env_id or 'none'])
+        #subprocess.check_call(['sudo', '/usr/local/bin/sudoable-env-setup', self.env_id or 'none'])
 
         for i in range(10):
             launched = self._reset_core(i)
@@ -66,6 +66,7 @@ class FlashgamesLauncher(object):
         return True
 
     def _git_lfs_pull(self):
-        subprocess.check_call(['sudo', '/usr/local/bin/sudoable-env-setup', 'git-lfs', self.controlplane_spec.id])
+        #subprocess.check_call(['sudo', '/usr/local/bin/sudoable-env-setup', 'git-lfs', self.controlplane_spec.id])
+        subprocess.check_call(['sudo', 'git-lfs', self.controlplane_spec.id])
         completion_file = os.path.join('/usr/local/openai/git-lfs', self.controlplane_spec.id)
         assert os.path.exists(completion_file), "No such file: {}".format(completion_file)
